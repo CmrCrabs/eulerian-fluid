@@ -11,24 +11,29 @@ ny :: Int
 iters :: Int
 dt :: Double
 gravity :: Double
-o :: Double -- overrelaxation
-h :: Double -- grid spacing
+o :: Double
+h :: Double
 radius :: Double
 gap :: Double
 frames :: Int
 density :: Double
+obstacle :: Bool
 
+-- ---------------------- PARAMETERS --------------------------
 nx = 96
 ny = 54
 iters = 20
 dt = 1 / 24
 gravity = -9.81
-o = 1.9
-h = 1.0
+o = 1.9 -- overrelaxation
+h = 1.0 -- grid spacing
 radius = 0.15
 gap = 0.2
-frames = 240
+frames = 1000
 density = 1000.0
+obstacle = True
+
+-- -------------------------------------------------------------
 
 type MutVec = M.MVector RealWorld Double
 data Sim = Sim
@@ -65,7 +70,8 @@ initSolids sV = forM_ [0 .. nx * ny - 2] $ \i -> do
       (xC, yC) = (fromIntegral x * h, fromIntegral y * h)
 
   let inCircle = dist xC yC xCr yCr <= (h * radius * fromIntegral ny)
-  M.write sV i $ if isBorder || inCircle then 0 else 1
+      isObstacle = if obstacle then inCircle else False
+  M.write sV i $ if isBorder || isObstacle then 0 else 1
 
 dist :: Double -> Double -> Double -> Double -> Double
 dist x1 y1 x2 y2 = sqrt ((x2-x1) * (x2-x1) + (y2-y1)*(y2-y1))
@@ -290,9 +296,9 @@ main = do
       project uV vV sV pressureV
       extrapolateBorder uV vV
 
-      copyVelocities newUV newVV uV vV
-      advectVel newUV newVV uV vV sV
-      returnVelocities newUV newVV uV vV
+      --copyVelocities newUV newVV uV vV
+      --advectVel newUV newVV uV vV sV
+      --returnVelocities newUV newVV uV vV
 
       copySmoke smokeV newSmokeV
       advectSmoke uV vV sV smokeV newSmokeV
@@ -347,5 +353,5 @@ sciColor _ p minP maxP =
         1 -> (0, 1, 1 - sc)
         2 -> (sc, 1, 0)
         _ -> (1, 1 - sc, 0)
-      to8 x = floor (255 * x)
+      to8 x = min 255 (floor (255 * x))
   in PixelRGB8 (to8 r) (to8 g) (to8 b)
