@@ -10,7 +10,7 @@ nx :: Int
 nx = 100
 
 ny :: Int
-ny = 30
+ny = 50
 
 iters :: Int -- number of iterations
 iters = 60
@@ -19,10 +19,10 @@ dt :: Double -- timestep
 dt = 1 / 60
 
 gravity :: Double
-gravity = -9.81
+gravity = 9.81
 
 o :: Double -- overrelaxation
-o = 1.9
+o = 1.3
 
 h :: Double -- grid spacing
 h = 1.0
@@ -63,12 +63,12 @@ initSolids :: MutVec -> ST RealWorld ()
 initSolids sV = forM_ [0 .. nx * ny - 1] $ \i -> do
   let (x, y) = coord i
       isBorder = x == 0 || y == 0 || x == nx - 1 || y == ny - 1
-      (xCr, yCr) = (0.5 * fromIntegral nx * h, 0.5 * fromIntegral ny * h)
+      (xCr, yCr) = (0.2 * fromIntegral nx * h, 0.5 * fromIntegral ny * h)
       (xC, yC) = (fromIntegral x * h, fromIntegral y * h)
 
-  --let inCircle = dist xC yC xCr yCr <= (h * 0.1 * fromIntegral ny)
-  --M.write sV i $ if isBorder || inCircle then 0 else 1
-  M.write sV i $ if isBorder then 0 else 1
+  let inCircle = dist xC yC xCr yCr <= (h * 0.15 * fromIntegral ny)
+  M.write sV i $ if isBorder || inCircle then 0 else 1
+  --M.write sV i $ if isBorder then 0 else 1
 
 dist :: Double -> Double -> Double -> Double -> Double
 dist x1 y1 x2 y2 = sqrt ((x2-x1) * (x2-x1) + (y2-y1)*(y2-y1))
@@ -77,9 +77,8 @@ diffuse :: MutVec -> MutVec -> ST RealWorld ()
 diffuse vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
   oldV <- M.read vV i
   sCell <- M.read sV i
-  if sCell == 0
-    then return ()
-    else M.write vV i $ oldV + gravity * dt
+  unless (sCell == 0) $ do
+    M.write vV i $ oldV + gravity * dt
 
 resetPressure :: MutVec -> ST RealWorld ()
 resetPressure pressureV = forM_ [0 .. nx * ny - 1] $ \i -> do
@@ -110,8 +109,8 @@ project uV vV sV pressureV = forM_ [0 .. iters] $ \_ -> do
           p' = pCell + p * pc
 
       let u' = uCell - sx0 * p
-          v' = vCell - sy0 * p
           u1' = ux1 + sx1 * p
+          v' = vCell - sy0 * p
           v1' = vy1 + sy1 * p
 
       M.write pressureV i p'
@@ -202,11 +201,11 @@ sample vec xC yC field = do
       y0 = min (ny-1) $ floor ((y-dy)*h1)
 
   let tx = ((x-dx) - fromIntegral x0*h) *h1
-      x1 = min (x0 + 1) (nx -1)
+      x1 = min (x0+1) (nx-1)
       ty = ((y-dy) -fromIntegral y0*h) * h1
       y1 = min (y0+1) (ny-1)
       sx = 1.0 - tx
-      sy = 1.0 -ty
+      sy = 1.0 - ty
 
   let idxX = case field of
         U -> idxU
@@ -256,9 +255,9 @@ advectSmoke uV vV sV newSmokeV = forM_ [0 .. nx * ny - 1] $ \i -> do
 
 windTunnel :: MutVec -> MutVec -> ST RealWorld ()
 windTunnel uV smokeV = do
-  let windU = 3.0
+  let windU = 5.0
       smokeAmount = 1.0
-      vertOffset = floor (fromIntegral ny * 0.45)
+      vertOffset = floor (fromIntegral ny * 0.46)
 
   forM_ [vertOffset .. (ny - vertOffset)] $ \y -> do
     currentU <- M.read uV (idxU 1 y)
@@ -270,10 +269,10 @@ windTunnel uV smokeV = do
 main :: IO ()
 main = do
   (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV) <- stToIO $ do
-    uV         <- M.replicate ((nx + 1) * ny) 0
-    vV         <- M.replicate (nx * (ny + 1)) 0
-    newUV      <- M.replicate ((nx + 1) * ny) 0
-    newVV      <- M.replicate (nx * (ny + 1)) 0
+    uV         <- M.replicate (nx * ny) 0
+    vV         <- M.replicate (nx * ny) 0
+    newUV      <- M.replicate (nx * ny) 0
+    newVV      <- M.replicate (nx * ny) 0
     sV         <- M.replicate (nx * ny) 0
     pressureV  <- M.replicate (nx * ny) 0
     smokeV     <- M.replicate (nx * ny) 0
@@ -282,10 +281,10 @@ main = do
     initSolids sV
     pure (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV)
 
-  forM_ [(0 :: Int)..100] $ \i -> do
+  forM_ [(0 :: Int)..200] $ \i -> do
     stToIO $ do
       windTunnel uV smokeV
-      --diffuse vV sV
+      diffuse vV sV
       resetPressure pressureV
       project uV vV sV pressureV
       extrapolateBorder uV vV
@@ -298,6 +297,7 @@ main = do
       advectSmoke uV vV sV newSmokeV
       returnSmoke smokeV newSmokeV
 
+
     frozenS     <- stToIO $ V.freeze sV
     frozenSmoke <- stToIO $ V.freeze smokeV
     frozenPressure <- stToIO $ V.freeze pressureV
@@ -308,9 +308,9 @@ main = do
     let renderpx x y =
           sciSmokeColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP (frozenSmoke V.! idxS x y)
 
-    writePng ("frames/frame_" ++ show i ++ ".png") $
-      generateImage renderpx nx ny
+    writePng ("frames/frame_" ++ show i ++ ".png") $ generateImage renderpx nx ny
     putStrLn ("rendered frame " ++ show i)
+
 
 sciSmokeColor :: Double -> Double -> Double -> Double -> Double -> PixelRGB8
 sciSmokeColor 0 _ _ _ _ = PixelRGB8 255 0 0
@@ -328,3 +328,8 @@ sciSmokeColor _ p minP maxP smokeV =
         _ -> (1, 1 - sc, 0)
       to8 x = floor (255 * x * min 1.0 smokeV)
   in PixelRGB8 (to8 r) (to8 g) (to8 b)
+
+
+  -- notes
+  --  upward movement introduced in advect
+  -- grid is bottom left orogin image is topleft origin -> fix rendering for that
