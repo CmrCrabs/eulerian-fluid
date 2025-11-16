@@ -1,13 +1,16 @@
 module Main where
 
 import Codec.Picture
-import qualified Data.Vector as V
-import qualified Data.Vector.Mutable as M
 import Control.Monad (forM_, unless)
 import Control.Monad.ST
+import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as M
 
-n :: Int -- grid size
-n = 32
+nx :: Int
+nx = 64
+
+ny :: Int
+ny = 32
 
 iters :: Int -- number of iterations
 iters = 10
@@ -27,154 +30,162 @@ h = 1.0
 density :: Double
 density = 1.0
 
-data Cell = Cell
-  { u :: Double,
-    v :: Double,
-    newU :: Double,
-    newV :: Double,
-    sInt :: Double,
-    pressure :: Double,
-    smoke :: Double,
-    newSmoke :: Double,
-    solid :: Bool
-  } deriving (Eq)
+type MutVec = M.MVector RealWorld Double
+
+data Sim = Sim
+  { pressure :: !MutVec,
+    smoke    :: !MutVec,
+    newSmoke :: !MutVec,
+    s        :: !MutVec,
+    u        :: !MutVec,
+    newU     :: !MutVec,
+    v        :: !MutVec,
+    newV     :: !MutVec
+  }
 
 data SampleType = U | V | S
 
-idx :: Int -> Int -> Int
-idx x y = x + y * n
+
+idxS :: Int -> Int -> Int
+idxS x y = x * ny + y
+
+idxU :: Int -> Int -> Int
+idxU x y = x * (ny + 1) + y
+
+idxV :: Int -> Int -> Int
+idxV x y = x * ny + y
 
 coord :: Int -> (Int, Int)
-coord i = (i `mod` n, i `div` n)
+coord i = (i `mod` nx, i `div` ny)
 
-sciColor :: Double -> Double -> Cell -> PixelRGB8
-sciColor _ _ Cell { solid = True } = PixelRGB8 255 255 255
-sciColor minP maxP Cell{ pressure = p } =
-    let d = (p - minP) / (maxP - minP)
-        c   = floor (255 * d)
-    in PixelRGB8 c c c
+smokeColor :: Double -> Double -> PixelRGB8
+smokeColor 0 _ = PixelRGB8 255 255 255
+smokeColor _ smokeV =
+  let c = floor (255 * smoke)
+   in PixelRGB8 c c c
 
-smokeColor :: Cell -> PixelRGB8
-smokeColor Cell { solid = True } = PixelRGB8 255 255 255
-smokeColor cell =
-  let c = floor (255 * smoke cell)
-  in PixelRGB8 c c c
+initSolids :: MutVec -> ST RealWorld ()
+initSolids sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+  let (x, y) = coord i
+  let isBorder = x == 0 || y == 0 || x == nx - 1 || y == nx - 1
+  M.write sV i $ if isBorder then 0 else 1
 
-
-
-initSolids :: M.MVector s Cell -> ST s ()
-initSolids grid = forM_ [0..M.length grid - 1] $ \i -> do
-  cell <- M.read grid i
-  let (x,y) = coord i
-  let isBorder = x == 0 || y == 0 || x == n - 1 || y == n - 1
-  M.write grid i cell { solid = isBorder, sInt = if isBorder then 0 else 1 }
-
-diffuse :: M.MVector s Cell -> ST s ()
-diffuse grid = forM_ [0..M.length grid - 1] $ \i -> do
-  cell <- M.read grid i
-  if solid cell
+diffuse :: MutVec -> MutVec -> ST RealWorld ()
+diffuse vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+  oldV <- M.read vV i
+  sCell <- M.read sV i
+  if sCell == 0
     then return ()
-    else M.write grid i cell { v = v cell + g * dt }
+    else M.write vV i $ oldV + g * dt
 
-resetPressure :: M.MVector s Cell -> ST s ()
-resetPressure grid = forM_ [0..M.length grid -1] $ \i -> do
-  cell <- M.read grid i
-  M.write grid i cell { pressure = 0 }
+resetPressure :: MutVec -> ST RealWorld ()
+resetPressure pressureV = forM_ [0 .. nx * ny - 1] $ \i -> do
+  M.write pressureV i 0
 
-project :: M.MVector s Cell -> ST s ()
-project grid = forM_ [0..iters] $ \_ -> do
-  forM_ [0..M.length grid -1] $ \j -> do
-    let (x,y) = coord j
-    cell <- M.read grid (idx x y)
+project :: MutVec-> MutVec -> MutVec -> MutVec -> ST RealWorld ()
+project uV vV sV pressureV = forM_ [0 .. iters] $ \_ -> do
+  forM_ [0 .. nx * ny - 1] $ \i -> do
+    let (x, y) = coord i
+    sCell <- M.read sV i
+    uCell <- M.read uV i
+    vCell <- M.read vV i
+    pCell <- M.read pressureV i
 
-    unless (solid cell) $ do
-      cellx0 <- M.read grid $ idx (x-1) y
-      cellx1 <- M.read grid $ idx (x+1) y
-      celly0 <- M.read grid $ idx x (y-1)
-      celly1 <- M.read grid $ idx x (y+1)
+    unless (sCell == 0) $ do
+      sx0 <- M.read sV $ idxS (x - 1) y
+      sx1 <- M.read sV $ idxS (x + 1) y
+      sy0 <- M.read sV $ idxS x (y - 1)
+      sy1 <- M.read sV $ idxS x (y + 1)
 
-      let sx0 = sInt cellx0
-          sx1 = sInt cellx1
-          sy0 = sInt celly0
-          sy1 = sInt celly1
+      ux1 <- M.read uV $ idxU (x + 1) y
+      vy1 <- M.read vV $ idxV x (y + 1)
 
-      let d = u cellx1 - u cell + v celly1 - v cell
-          s = sx0 + sx1 + sy0 + sy1
+      let d = ux1 - uCell + vy1 - vCell
+          s' = sx0 + sx1 + sy0 + sy1
           pc = density * h / dt
-          p = (-d) * o / s
-          p' = pressure cell + p * pc
+          p = (-d) * o / s'
+          p' = pCell + p * pc
 
-      let u0' = u cell - sx0 * p
-          v0' = v cell - sy0 * p
-          u1' = u cellx1 + sx1 * p
-          v1' = v celly1 + sy1 * p
+      let u' = uCell - sx0 * p
+          v' = vCell - sy0 * p
+          u1' = ux1 + sx1 * p
+          v1' = vy1 + sy1 * p
 
-      M.write grid (idx x y) cell { pressure = p', u = u0', v = v0' }
-      M.write grid (idx (x+1) y) cellx1 { u = u1' }
-      M.write grid (idx x (y+1)) celly1 { v = v1' }
+      M.write pressureV i p'
+      M.write uV i u'
+      M.write vV i v'
+      M.write uV (idxU (x + 1) y) u1'
+      M.write vV (idxV x (y + 1)) v1'
 
-extrapolateBorder :: M.MVector s Cell -> ST s ()
-extrapolateBorder grid = do
-  forM_ [0..n - 1] $ \x -> do
-    bT <- M.read grid $ idx x 0
-    bTA <- M.read grid $ idx x 1
-    M.write grid (idx x 0) bT { u = u bTA }
+extrapolateBorder :: MutVec -> MutVec -> ST RealWorld ()
+extrapolateBorder uV vV = do
+  forM_ [0 .. nx - 1] $ \x -> do
+    borderTopAdj <- M.read uV $ idxU x 1
+    M.write uV (idxU x 0) borderTopAdj
 
-    bB <- M.read grid $ idx x (n-1)
-    bBA <- M.read grid $ idx x (n-2)
-    M.write grid (idx x (n-1)) bB { u = u bBA }
+    borderBottomAdj <- M.read uV $ idxU x (nx - 2)
+    M.write uV (idxU x (nx - 1)) borderBottomAdj
 
-  forM_ [0..n - 1] $ \y -> do
-    bL <- M.read grid $ idx 0 y
-    bLA <- M.read grid $ idx 1 y
-    M.write grid (idx 0 y) bL { v = v bLA }
+  forM_ [0 .. ny - 1] $ \y -> do
+    borderLeftAdj <- M.read vV $ idxV 1 y
+    M.write vV (idxV 0 y) borderLeftAdj
 
-    bR <- M.read grid $ idx (n-1) y
-    bRA <- M.read grid $ idx (n-2) y
-    M.write grid (idx (n-1) y) bR { v = v bRA }
+    borderRightAdj <- M.read vV $ idxV (ny - 2) y
+    M.write vV (idxV (ny - 1) y) borderRightAdj
 
-copyVelocities :: M.MVector s Cell -> ST s ()
-copyVelocities grid = forM_ [1..M.length grid -1] $ \i -> do
-  cell <- M.read grid i
-  M.write grid i cell { newU = u cell, newV = v cell }
+copyVelocities :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
+copyVelocities newUV newVV uV vV = forM_ [1 .. nx * ny - 1] $ \i -> do
+  u' <- M.read uV i
+  v' <- M.read vV i
+  M.write newUV i u'
+  M.write newVV i v'
 
+returnVelocities :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
+returnVelocities newUV newVV uV vV = forM_ [1 .. nx * ny - 1] $ \i -> do
+  newU' <- M.read newUV i
+  newV' <- M.read newVV i
+  M.write uV i newU'
+  M.write vV i newV'
 
-returnVelocities :: M.MVector s Cell -> ST s ()
-returnVelocities grid = forM_ [1..M.length grid -1] $ \i -> do
-  cell <- M.read grid i
-  M.write grid i cell { u = newU cell, v = newV cell }
+advectVel :: MutVec -> MutVec -> MutVec -> ST RealWorld ()
+advectVel uV vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+  let (x, y) = coord i
+  unless (x == 0 || y == 0 || x == nx - 1 || y == ny - 1) $ do
+    sCell <- M.read sV i
+    sx0 <- M.read sV $ idxS (x - 1) y
+    sy0 <- M.read sV $ idxS x (y - 1)
+    uCell <- M.read uV i
+    ux0 <- M.read uV $ idxU (x - 1) y
+    ux1 <- M.read uV $ idxU (x + 1) y
+    uy0 <- M.read uV $ idxU x (y - 1)
+    uy1 <- M.read uV $ idxU x (y + 1)
+    vCell <- M.read vV i
+    vx0 <- M.read vV $ idxV (x - 1) y
+    vx1 <- M.read vV $ idxV (x + 1) y
+    vy0 <- M.read vV $ idxV x (y - 1)
+    vy1 <- M.read vV $ idxV x (y + 1)
 
-advectVel :: M.MVector s Cell -> ST s ()
-advectVel grid = forM_ [0..M.length grid -1] $ \i -> do
-  let (x,y) = coord i
-  unless (x == 0 || y == 0 || x == n - 1 || y == n - 1) $ do
-    cell <- M.read grid i
-    cellx0 <- M.read grid $ idx (x-1) y
-    cellx1 <- M.read grid $ idx (x+1) y
-    celly0 <- M.read grid $ idx x (y-1)
-    celly1 <- M.read grid $ idx x (y+1)
-
-    unless (solid cell || solid cellx0) $ do -- check for the y > n cond
-      let avgV = 0.25 * (v cellx0 + v cellx1 + v celly0 + v celly1)
-      let xCoord = fromIntegral x * h - dt * u cell
+    unless (sCell == 0 || sx0 == 0) $ do
+      -- check for the y > n cond
+      let avgV = 0.25 * (vx0 + vx1 + vy0 + vy1)
+      let xCoord = fromIntegral x * h - dt * uCell
           yCoord = fromIntegral y * h - dt * avgV
-      nV <- sample grid xCoord yCoord V
-      M.write grid i cell { newV = nV }
+      nV <- sample vV xCoord yCoord V
+      M.write vV i nV
 
-    cellUpdated <- M.read grid i
-    unless (solid cellUpdated || solid celly0) $ do
-      let avgU = 0.25 * (u cellx0 + u cellx1 + u celly0 + u celly1)
+    -- check for updating cell here
+    unless (sCell == 0 || sy0 == 0) $ do
+      let avgU = 0.25 * (ux0 + ux1 + uy0 + uy1)
       let xCoord = fromIntegral x * h - dt * avgU
-          yCoord = fromIntegral y * h - dt * v cellUpdated
-      nU <- sample grid xCoord yCoord U
-      M.write grid i cellUpdated { newU = nU }
+          yCoord = fromIntegral y * h - dt * vCell
+      nU <- sample uV xCoord yCoord U
+      M.write uV i nU
 
-
-sample :: M.MVector s Cell -> Double -> Double -> SampleType -> ST s Double
-sample grid xC yC field = do
+sample :: MutVec -> Double -> Double -> SampleType -> ST RealWorld Double
+sample vec xC yC field = do
   -- clamp to be within worldspace
-  let xClamped = max 0.0 (min xC (fromIntegral n - 1.0))
-      yClamped = max 0.0 (min yC (fromIntegral n - 1.0))
+  let xClamped = max 0.0 (min xC (fromIntegral nx - 1.0))
+      yClamped = max 0.0 (min yC (fromIntegral ny - 1.0))
 
   -- scalars stored cell centres, velocities stored staggered
   let (offsetX, offsetY) =
@@ -192,107 +203,116 @@ sample grid xC yC field = do
       w10 = 1 - fromIntegral y0 / h
       w11 = fromIntegral y0 / h
 
-  let f =
-        case field of
-          U -> u
-          V -> v
-          S -> smoke
+  let idxX = case field of
+        U -> idxU
+        V -> idxV
+        S -> idxS
 
-  cell00 <- M.read grid $ idx x0 y0
-  cell01 <- M.read grid $ idx x0 (y0+1)
-  cell10 <- M.read grid $ idx (x0+1) y0
-  cell11 <- M.read grid $ idx (x0+1) (y0+1)
+  cell00 <- M.read vec $ idxX x0 y0
+  cell01 <- M.read vec $ idxX x0 (y0 + 1)
+  cell10 <- M.read vec $ idxX (x0 + 1) y0
+  cell11 <- M.read vec $ idxX (x0 + 1) (y0 + 1)
 
-  let val = w00 * w01 * f cell00
-            + w01 * w10 * f cell10
-            + w01 * w11 * f cell01
-            + w00 * w11 * f cell11
+  let val =
+        w00 * w01 * cell00
+          + w01 * w10 * cell10
+          + w01 * w11 * cell01
+          + w00 * w11 * cell11
   return val
 
+copySmoke :: MutVec -> MutVec -> ST RealWorld ()
+copySmoke smokeV newSmokeV = forM_ [1 .. nx * ny - 1] $ \i -> do
+  s <- M.read smokeV i
+  M.write newSmokeV i s
 
-copySmoke :: M.MVector s Cell -> ST s ()
-copySmoke grid = forM_ [1..M.length grid -1] $ \i -> do
-  cell <- M.read grid i
-  M.write grid i cell { newSmoke = smoke cell }
+returnSmoke :: MutVec -> MutVec -> ST RealWorld ()
+returnSmoke smokeV newSmokeV = forM_ [1 .. nx * ny - 1] $ \i -> do
+  nS <- M.read newSmokeV i
+  M.write smokeV i nS
 
-returnSmoke :: M.MVector s Cell -> ST s ()
-returnSmoke grid = forM_ [1..M.length grid -1] $ \i -> do
-  cell <- M.read grid i
-  M.write grid i cell { smoke = newSmoke cell }
-
-advectSmoke :: M.MVector s Cell -> ST s ()
-advectSmoke grid = forM_ [0..M.length grid - 1] $ \i -> do
-  cell <- M.read grid i
+advectSmoke :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
+advectSmoke uV vV sV newSmokeV = forM_ [0 .. nx * ny - 1] $ \i -> do
   let (x, y) = coord i
+  sCell <- M.read sV i
+  uCell <- M.read uV i
+  vCell <- M.read vV i
 
-  unless (solid cell) $ do
-    cellx1 <- M.read grid $ idx (x+1) y
-    celly1 <- M.read grid $ idx x (y+1)
-    let uC = u cell + u cellx1 * 0.5
-        vC = v cell + v celly1 * 0.5
+  unless (sCell == 0) $ do
+    ux1 <- M.read uV $ idxU (x + 1) y
+    vy1 <- M.read vV $ idxV x (y + 1)
+
+    let uC = uCell + ux1 * 0.5
+        vC = vCell + vy1 * 0.5
 
     let xStep = fromIntegral x * h + 0.5 * h - dt * uC
         yStep = fromIntegral y * h + 0.5 * h - dt * vC
 
-    newS <- sample grid xStep yStep S
-    M.write grid i cell {newSmoke = newS }
+    newS <- sample newSmokeV xStep yStep S
+    M.write newSmokeV i newS
 
-
-simulate :: Int -> M.MVector s Cell -> ST s ()
+simulate :: Int -> Sim -> ST RealWorld ()
 simulate 0 _ = return ()
-simulate i grid = do
-  diffuse grid
-  resetPressure grid
-  project grid
-  extrapolateBorder grid
+simulate i sim = do
+  diffuse (v sim) (s sim)
+  resetPressure (pressure sim)
+  project (u sim) (v sim) (s sim) (pressure sim)
+  extrapolateBorder (u sim) (v sim)
 
   -- copying and returning to prevent accessing updated values
-  copyVelocities grid
-  advectVel grid
-  returnVelocities grid
+  copyVelocities (newU sim) (newV sim) (u sim) (v sim)
+  advectVel (u sim) (v sim) (s sim)
+  returnVelocities (newU sim) (newV sim) (u sim) (v sim)
 
-  copySmoke grid
-  advectSmoke grid
-  returnSmoke grid
+  copySmoke (smoke sim) (newSmoke sim)
+  advectSmoke (u sim) (v sim) (s sim) (newSmoke sim)
+  returnSmoke (smoke sim) (newSmoke sim)
 
-  simulate (i-1) grid
+  simulate (i - 1) sim
 
 main :: IO ()
 main = do
-  grid' <- stToIO $ do
-    grid <- M.replicate (n*n)
-          Cell
-            { u = 0,
-              v = 0,
-              newU = 0,
-              newV = 0,
-              sInt = 0,
-              pressure = 0,
-              smoke = 0,
-              newSmoke = 0,
-              solid = False
-            }
+  simulation <- stToIO $ do
+    uV         <- M.replicate ((nx + 1) * ny) 0 -- initialising a MAC grid
+    vV         <- M.replicate (nx * (ny + 1)) 0
+    newUV      <- M.replicate ((nx + 1) * ny) 0
+    newVV      <- M.replicate (nx * (ny + 1)) 0
+    sV         <- M.replicate (nx * ny) 0
+    pressureV  <- M.replicate (nx * ny) 0
+    smokeV     <- M.replicate (nx * ny) 0
+    newSmokeV  <- M.replicate (nx * ny) 0
+    sim <-
+      Sim
+        { u        = uV,
+          v        = vV,
+          newU     = newUV,
+          newV     = newVV,
+          s        = sV,
+          pressure = pressureV,
+          smoke    = smokeV,
+          newSmoke = newSmokeV
+        }
 
-    initSolids grid
+    initSolids (s sim)
 
-    simulate 1 grid
+    simulate 1 sim
 
-    return grid
+    return sim
 
-  frozen <- stToIO $ V.freeze grid'
+  frozen <- stToIO $ V.freeze simulation
 
-  let compP c1 c2 = compare (pressure c1) (pressure c2)
-  let minP = pressure $ V.minimumBy compP frozen
-      maxP = pressure $ V.maximumBy compP frozen
+  --let minP = V.minimum $ pressure frozen
+  --    maxP = V.maximum $ pressure frozen
 
-  print (minP, maxP)
-  let renderpx :: Int -> Int -> PixelRGB8
-      renderpx x y = smokeColor (frozen V.! idx x y)
+  let renderpx x y = smokeColor ((s frozen) V.! idxS x y) ((smoke frozen) V.! idxS x y)
+  writePng "output.png" $ generateImage renderpx nx ny
 
-  writePng "output.png" $ generateImage renderpx n n
+-- REWRITE TODOS
 
--- TODO advectSmoke()
--- TODO rendersmoke()
-
-
-  -- unsafeFreeze means cannot use mutable vector after
+-- helpers
+-- main
+-- init
+-- integrate
+-- project
+-- advectvel
+-- sample
+-- advectsmoke
