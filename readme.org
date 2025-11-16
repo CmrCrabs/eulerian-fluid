@@ -1,13 +1,12 @@
 [[./no_obstacle_final.mp4][preview]]
 
 *** description
-a 2D Eulerian fluid simulation using a staggered grid, implemented using 1D MVectors. Explained parameters are at the beginning of [[Main.hs]]
+a 2D Eulerian fluid simulation using a staggered grid, implemented using 1D MVectors. Explained parameters are at the beginning of [[Main.hs]]. Dependencies in [[./default.nix]]
 *** notes
-- parameters at top of Main.hs, with notes
 - simulation will become unstable if parameters (overrelaxation, dt, ..) arent balanced
-- requires zlib, and optionally imagemagick/ffmpeg for converting frames -> video (see [[./default.nix][default.nix]])
-- can be measured in frames per second rather than seconds per frame for a 192x108x40 simulation
+- requires zlib, and optionally imagemagick/ffmpeg for converting frames -> video
+- can be measured in frames per second rather than seconds per frame for a 192x108x50 simulation
 
 *** reference
-[[https://matthias-research.github.io/pages/tenMinutePhysics/17-fluidSim.pdf][slides ]] \n
-[[https://www.youtube.com/watch?v=iKAVRgIrUOU][video ]]
+- [[https://matthias-research.github.io/pages/tenMinutePhysics/17-fluidSim.pdf][slides ]]
+- [[https://www.youtube.com/watch?v=iKAVRgIrUOU][video ]]
