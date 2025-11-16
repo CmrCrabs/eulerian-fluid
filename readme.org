@@ -1,0 +1,6 @@
+
+
+- parameters at top of Main.hs, with notes
+- requires zlib
+- imagemagick/ffmpeg for converting frames -> video (see ./default.nix)
+- can be measured in frames per second rather than seconds per frame for a 192x108x40 simulation
