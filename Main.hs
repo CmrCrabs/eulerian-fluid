@@ -33,7 +33,7 @@ obstacle = False -- whether or not to enable the obstacle (circle)
 radius = 0.15 -- radius of obstacle if enabled
 gap = 0.2 -- make sure gap >> radius
 
-frames = 800 -- number of frames to render, and output to frames/frame_{X}.png
+frames = 1 -- number of frames to render, and output to frames/frame_{i}.png
 -- -------------------------------------------------------------
 
 type MVec = M.MVector RealWorld Double
