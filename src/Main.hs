@@ -7,31 +7,30 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as M
 
 nx :: Int
-nx = 100
-
 ny :: Int
-ny = 50
-
-iters :: Int -- number of iterations
-iters = 60
-
-dt :: Double -- timestep
-dt = 1 / 60
-
+iters :: Int
+dt :: Double
 gravity :: Double
-gravity = 9.81
-
 o :: Double -- overrelaxation
-o = 1.3
-
 h :: Double -- grid spacing
-h = 1.0
-
+radius :: Double
+gap :: Double
+frames :: Int
 density :: Double
-density = 1.0
+
+nx = 96
+ny = 54
+iters = 20
+dt = 1 / 24
+gravity = -9.81
+o = 1.9
+h = 1.0
+radius = 0.15
+gap = 0.2
+frames = 240
+density = 1000.0
 
 type MutVec = M.MVector RealWorld Double
-
 data Sim = Sim
   { pressure :: !MutVec,
     smoke    :: !MutVec,
@@ -44,7 +43,6 @@ data Sim = Sim
   }
 
 data SampleType = U | V | S
-
 
 idxS :: Int -> Int -> Int
 idxS x y = x + y * nx
@@ -60,33 +58,32 @@ coord i = (i `mod` nx, i `div` nx)
 
 
 initSolids :: MutVec -> ST RealWorld ()
-initSolids sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+initSolids sV = forM_ [0 .. nx * ny - 2] $ \i -> do
   let (x, y) = coord i
       isBorder = x == 0 || y == 0 || x == nx - 1 || y == ny - 1
-      (xCr, yCr) = (0.2 * fromIntegral nx * h, 0.5 * fromIntegral ny * h)
+      (xCr, yCr) = (gap * fromIntegral nx * h, 0.5 * fromIntegral ny * h)
       (xC, yC) = (fromIntegral x * h, fromIntegral y * h)
 
-  let inCircle = dist xC yC xCr yCr <= (h * 0.15 * fromIntegral ny)
+  let inCircle = dist xC yC xCr yCr <= (h * radius * fromIntegral ny)
   M.write sV i $ if isBorder || inCircle then 0 else 1
-  --M.write sV i $ if isBorder then 0 else 1
 
 dist :: Double -> Double -> Double -> Double -> Double
 dist x1 y1 x2 y2 = sqrt ((x2-x1) * (x2-x1) + (y2-y1)*(y2-y1))
 
 diffuse :: MutVec -> MutVec -> ST RealWorld ()
-diffuse vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+diffuse vV sV = forM_ [0 .. nx * ny - 2] $ \i -> do
   oldV <- M.read vV i
   sCell <- M.read sV i
   unless (sCell == 0) $ do
     M.write vV i $ oldV + gravity * dt
 
 resetPressure :: MutVec -> ST RealWorld ()
-resetPressure pressureV = forM_ [0 .. nx * ny - 1] $ \i -> do
+resetPressure pressureV = forM_ [0 .. nx * ny - 2] $ \i -> do
   M.write pressureV i 0
 
 project :: MutVec-> MutVec -> MutVec -> MutVec -> ST RealWorld ()
 project uV vV sV pressureV = forM_ [0 .. iters] $ \_ -> do
-  forM_ [0 .. nx * ny - 1] $ \i -> do
+  forM_ [0 .. nx * ny - 2] $ \i -> do
     let (x, y) = coord i
     sCell <- M.read sV i
     uCell <- M.read uV i
@@ -99,25 +96,27 @@ project uV vV sV pressureV = forM_ [0 .. iters] $ \_ -> do
       sy0 <- M.read sV $ idxS x (y - 1)
       sy1 <- M.read sV $ idxS x (y + 1)
 
-      ux1 <- M.read uV $ idxU (x + 1) y
-      vy1 <- M.read vV $ idxV x (y + 1)
+      let s' = sx0 + sx1 + sy0 + sy1
+      unless (s' == 0.0) $ do
+        ux1 <- M.read uV $ idxU (x + 1) y
+        vy1 <- M.read vV $ idxV x (y + 1)
 
-      let d = ux1 - uCell + vy1 - vCell
-          s' = sx0 + sx1 + sy0 + sy1
-          pc = density * h / dt
-          p = (-d) * o / s'
-          p' = pCell + p * pc
+        let d = ux1 - uCell + vy1 - vCell
+            pc = density * h / dt
+            p = (-d) * o / s'
+            p' = pCell + p * pc
 
-      let u' = uCell - sx0 * p
-          u1' = ux1 + sx1 * p
-          v' = vCell - sy0 * p
-          v1' = vy1 + sy1 * p
+        M.write pressureV i p'
 
-      M.write pressureV i p'
-      M.write uV i u'
-      M.write vV i v'
-      M.write uV (idxU (x + 1) y) u1'
-      M.write vV (idxV x (y + 1)) v1'
+        let u' = uCell - sx0 * p
+            ux1' = ux1 + sx1 * p
+            v' = vCell - sy0 * p
+            vy1' = vy1 + sy1 * p
+
+        M.write uV i u'
+        M.write uV (idxU (x + 1) y) ux1'
+        M.write vV i v'
+        M.write vV (idxV x (y + 1)) vy1'
 
 extrapolateBorder :: MutVec -> MutVec -> ST RealWorld ()
 extrapolateBorder uV vV = do
@@ -136,50 +135,52 @@ extrapolateBorder uV vV = do
     M.write vV (idxV (nx - 1) y) borderRightAdj
 
 copyVelocities :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
-copyVelocities newUV newVV uV vV = forM_ [1 .. nx * ny - 1] $ \i -> do
+copyVelocities newUV newVV uV vV = forM_ [0 .. nx * ny - 2] $ \i -> do
   u' <- M.read uV i
   v' <- M.read vV i
   M.write newUV i u'
   M.write newVV i v'
 
 returnVelocities :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
-returnVelocities newUV newVV uV vV = forM_ [1 .. nx * ny - 1] $ \i -> do
+returnVelocities newUV newVV uV vV = forM_ [0 .. nx * ny - 2] $ \i -> do
   newU' <- M.read newUV i
   newV' <- M.read newVV i
   M.write uV i newU'
   M.write vV i newV'
 
 advectVel :: MutVec -> MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
-advectVel newUV newVV uV vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+advectVel newUV newVV uV vV sV = forM_ [0 .. nx * ny - 2] $ \i -> do
   let (x, y) = coord i
+
   unless (x == 0 || y == 0 || x == nx - 1 || y == ny - 1) $ do
+
     sCell <- M.read sV i
     sx0 <- M.read sV $ idxS (x - 1) y
     sy0 <- M.read sV $ idxS x (y - 1)
+
     uCell <- M.read uV i
-    ux0 <- M.read uV $ idxU (x - 1) y
     ux1 <- M.read uV $ idxU (x + 1) y
     uy0 <- M.read uV $ idxU x (y - 1)
-    uy1 <- M.read uV $ idxU x (y + 1)
+    ux1y0 <- M.read uV $ idxU (x+1) (y-1)
+    let avgU = 0.25 * (uCell + uy0 + ux1 + ux1y0)
+
     vCell <- M.read vV i
     vx0 <- M.read vV $ idxV (x - 1) y
-    vx1 <- M.read vV $ idxV (x + 1) y
-    vy0 <- M.read vV $ idxV x (y - 1)
     vy1 <- M.read vV $ idxV x (y + 1)
+    vx0y1 <- M.read vV $ idxV (x-1) (y+1)
+    let avgV = 0.25 * (vCell + vx0 + vy1 + vx0y1)
 
-    unless (sCell == 0 || sx0 == 0) $ do
-      let avgV = 0.25 * (vx0 + vx1 + vy0 + vy1)
-      let xCoord = fromIntegral x * h - dt * uCell
-          yCoord = fromIntegral y * h - dt * avgV
-      nV <- sample vV xCoord yCoord V
-      M.write newVV i nV
-
-    unless (sCell == 0 || sy0 == 0) $ do
-      let avgU = 0.25 * (ux0 + ux1 + uy0 + uy1)
-      let xCoord = fromIntegral x * h - dt * avgU
-          yCoord = fromIntegral y * h - dt * vCell
-      nU <- sample uV xCoord yCoord U
+    unless (sCell == 0 || sx0 == 0 || y > ny - 1) $ do -- maybe remove extra guards
+      let xC = fromIntegral x * h
+          yC = fromIntegral y * h + (0.5 * h)
+      nU <- sample uV (xC - dt * uCell) (yC - dt * avgV) U
       M.write newUV i nU
+
+    unless (sCell == 0 || sy0 == 0 || x > nx - 1) $ do
+      let xC = fromIntegral x * h + (0.5 * h)
+          yC = fromIntegral y * h
+      nV <- sample vV (xC - dt * avgU) (yC - dt * vCell) V
+      M.write newVV i nV
 
 sample :: MutVec -> Double -> Double -> SampleType -> ST RealWorld Double
 sample vec xC yC field = do
@@ -224,17 +225,17 @@ sample vec xC yC field = do
   return val
 
 copySmoke :: MutVec -> MutVec -> ST RealWorld ()
-copySmoke smokeV newSmokeV = forM_ [1 .. nx * ny - 1] $ \i -> do
+copySmoke smokeV newSmokeV = forM_ [0 .. nx * ny - 2] $ \i -> do
   smk <- M.read smokeV i
   M.write newSmokeV i smk
 
 returnSmoke :: MutVec -> MutVec -> ST RealWorld ()
-returnSmoke smokeV newSmokeV = forM_ [1 .. nx * ny - 1] $ \i -> do
+returnSmoke smokeV newSmokeV = forM_ [0 .. nx * ny - 2] $ \i -> do
   nS <- M.read newSmokeV i
   M.write smokeV i nS
 
-advectSmoke :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
-advectSmoke uV vV sV newSmokeV = forM_ [0 .. nx * ny - 1] $ \i -> do
+advectSmoke :: MutVec -> MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
+advectSmoke uV vV sV smokeV newSmokeV = forM_ [0 .. nx * ny - 2] $ \i -> do
   let (x, y) = coord i
   sCell <- M.read sV i
   uCell <- M.read uV i
@@ -250,16 +251,16 @@ advectSmoke uV vV sV newSmokeV = forM_ [0 .. nx * ny - 1] $ \i -> do
     let xStep = fromIntegral x * h + 0.5 * h - dt * uC
         yStep = fromIntegral y * h + 0.5 * h - dt * vC
 
-    newS <- sample newSmokeV xStep yStep S
+    newS <- sample smokeV xStep yStep S
     M.write newSmokeV i newS
 
 windTunnel :: MutVec -> MutVec -> ST RealWorld ()
 windTunnel uV smokeV = do
-  let windU = 5.0
+  let windU = 2.0
       smokeAmount = 1.0
-      vertOffset = floor (fromIntegral ny * 0.46)
+      mid = ny `div` 2
 
-  forM_ [vertOffset .. (ny - vertOffset)] $ \y -> do
+  forM_ [mid-1 .. mid+1] $ \y -> do
     currentU <- M.read uV (idxU 1 y)
     M.write uV (idxU 1 y) (currentU + windU)
     currentSmoke <- M.read smokeV (idxS 1 y)
@@ -281,10 +282,10 @@ main = do
     initSolids sV
     pure (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV)
 
-  forM_ [(0 :: Int)..200] $ \i -> do
+  forM_ [(0 :: Int)..frames] $ \i -> do
     stToIO $ do
       windTunnel uV smokeV
-      diffuse vV sV
+      --diffuse vV sV
       resetPressure pressureV
       project uV vV sV pressureV
       extrapolateBorder uV vV
@@ -294,7 +295,7 @@ main = do
       returnVelocities newUV newVV uV vV
 
       copySmoke smokeV newSmokeV
-      advectSmoke uV vV sV newSmokeV
+      advectSmoke uV vV sV smokeV newSmokeV
       returnSmoke smokeV newSmokeV
 
 
@@ -302,18 +303,21 @@ main = do
     frozenSmoke <- stToIO $ V.freeze smokeV
     frozenPressure <- stToIO $ V.freeze pressureV
 
-    let minP = V.minimum $ frozenPressure
-        maxP = V.maximum $ frozenPressure
+    let minP = V.minimum frozenPressure
+        maxP = V.maximum frozenPressure
 
-    let renderpx x y =
-          sciSmokeColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP (frozenSmoke V.! idxS x y)
+    let renderpx ix iy =
+          let x = ix
+              y = (ny -1) - iy
+          in sciSmokeColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP (frozenSmoke V.! idxS x y)
+          --in sciColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP
 
     writePng ("frames/frame_" ++ show i ++ ".png") $ generateImage renderpx nx ny
     putStrLn ("rendered frame " ++ show i)
 
 
 sciSmokeColor :: Double -> Double -> Double -> Double -> Double -> PixelRGB8
-sciSmokeColor 0 _ _ _ _ = PixelRGB8 255 0 0
+sciSmokeColor 0 _ _ _ _ = PixelRGB8 255 255 255
 sciSmokeColor _ p minP maxP smokeV =
   let eps = 1e-4
       d = maxP - minP
@@ -329,7 +333,19 @@ sciSmokeColor _ p minP maxP smokeV =
       to8 x = floor (255 * x * min 1.0 smokeV)
   in PixelRGB8 (to8 r) (to8 g) (to8 b)
 
-
-  -- notes
-  --  upward movement introduced in advect
-  -- grid is bottom left orogin image is topleft origin -> fix rendering for that
+sciColor :: Double -> Double -> Double -> Double -> PixelRGB8
+sciColor 0 _ _ _ = PixelRGB8 255 0 0
+sciColor _ p minP maxP =
+  let eps = 1e-4
+      d = maxP - minP
+      val = if d == 0 then 0.5 else (max minP (min p (maxP - eps)) - minP) / d
+      m = 0.25
+      num = floor (val / m) :: Int
+      sc = (val - fromIntegral num * m) / m
+      (r,g,b) = case num of
+        0 -> (0, sc, 1)
+        1 -> (0, 1, 1 - sc)
+        2 -> (sc, 1, 0)
+        _ -> (1, 1 - sc, 0)
+      to8 x = floor (255 * x)
+  in PixelRGB8 (to8 r) (to8 g) (to8 b)
