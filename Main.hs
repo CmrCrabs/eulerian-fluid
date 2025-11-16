@@ -20,16 +20,16 @@ density :: Double
 obstacle :: Bool
 
 -- ---------------------- PARAMETERS --------------------------
-nx = 96
-ny = 54
-iters = 20
-dt = 1 / 24
+nx = 192
+ny = 108
+iters = 40 -- try keep above ~20
+dt = 1 / 120 -- smaller timestep -> more stable, keep low as possible
 gravity = -9.81
 o = 1.9 -- overrelaxation
 h = 1.0 -- grid spacing
 radius = 0.15
-gap = 0.2
-frames = 1000
+gap = 0.2 -- make sure gap >> radius
+frames = 300
 density = 1000.0
 obstacle = True
 
@@ -275,15 +275,19 @@ windTunnel uV smokeV = do
 
 main :: IO ()
 main = do
+  let lenU = nx * ny
+      lenV = nx * ny
+      lenS = nx * ny
   (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV) <- stToIO $ do
-    uV         <- M.replicate (nx * ny) 0
-    vV         <- M.replicate (nx * ny) 0
-    newUV      <- M.replicate (nx * ny) 0
-    newVV      <- M.replicate (nx * ny) 0
-    sV         <- M.replicate (nx * ny) 0
-    pressureV  <- M.replicate (nx * ny) 0
-    smokeV     <- M.replicate (nx * ny) 0
-    newSmokeV  <- M.replicate (nx * ny) 0
+    uV         <- M.replicate lenU 0
+    vV         <- M.replicate lenV 0
+    newUV      <- M.replicate lenU 0
+    newVV      <- M.replicate lenV 0
+
+    sV         <- M.replicate lenS 0
+    pressureV  <- M.replicate lenS 0
+    smokeV     <- M.replicate lenS 0
+    newSmokeV  <- M.replicate lenS 0
 
     initSolids sV
     pure (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV)
@@ -296,9 +300,9 @@ main = do
       project uV vV sV pressureV
       extrapolateBorder uV vV
 
-      --copyVelocities newUV newVV uV vV
-      --advectVel newUV newVV uV vV sV
-      --returnVelocities newUV newVV uV vV
+      copyVelocities newUV newVV uV vV
+      advectVel newUV newVV uV vV sV
+      returnVelocities newUV newVV uV vV
 
       copySmoke smokeV newSmokeV
       advectSmoke uV vV sV smokeV newSmokeV
