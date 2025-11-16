@@ -20,16 +20,16 @@ density :: Double
 obstacle :: Bool
 
 -- ---------------------- PARAMETERS --------------------------
-nx = 192
-ny = 108
-iters = 40 -- try keep above ~20
-dt = 1 / 120 -- smaller timestep -> more stable, keep low as possible
+nx = 288
+ny = 162
+iters = 60 -- try keep above ~20
+dt = 1 / 220 -- smaller timestep -> more stable, keep low as possible
 gravity = -9.81
 o = 1.9 -- overrelaxation
 h = 1.0 -- grid spacing
 radius = 0.15
 gap = 0.2 -- make sure gap >> radius
-frames = 300
+frames = 800
 density = 1000.0
 obstacle = True
 
@@ -176,7 +176,7 @@ advectVel newUV newVV uV vV sV = forM_ [0 .. nx * ny - 2] $ \i -> do
     vx0y1 <- M.read vV $ idxV (x-1) (y+1)
     let avgV = 0.25 * (vCell + vx0 + vy1 + vx0y1)
 
-    unless (sCell == 0 || sx0 == 0 || y > ny - 1) $ do -- maybe remove extra guards
+    unless (sCell == 0 || sx0 == 0 || y > ny - 1) $ do
       let xC = fromIntegral x * h
           yC = fromIntegral y * h + (0.5 * h)
       nU <- sample uV (xC - dt * uCell) (yC - dt * avgV) U
@@ -320,7 +320,6 @@ main = do
           let x = ix
               y = (ny -1) - iy
           in sciSmokeColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP (frozenSmoke V.! idxS x y)
-          --in sciColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP
 
     writePng ("frames/frame_" ++ show i ++ ".png") $ generateImage renderpx nx ny
     putStrLn ("rendered frame " ++ show i)
@@ -341,21 +340,4 @@ sciSmokeColor _ p minP maxP smokeV =
         2 -> (sc, 1, 0)
         _ -> (1, 1 - sc, 0)
       to8 x = floor (255 * x * min 1.0 smokeV)
-  in PixelRGB8 (to8 r) (to8 g) (to8 b)
-
-sciColor :: Double -> Double -> Double -> Double -> PixelRGB8
-sciColor 0 _ _ _ = PixelRGB8 255 0 0
-sciColor _ p minP maxP =
-  let eps = 1e-4
-      d = maxP - minP
-      val = if d == 0 then 0.5 else (max minP (min p (maxP - eps)) - minP) / d
-      m = 0.25
-      num = floor (val / m) :: Int
-      sc = (val - fromIntegral num * m) / m
-      (r,g,b) = case num of
-        0 -> (0, sc, 1)
-        1 -> (0, 1, 1 - sc)
-        2 -> (sc, 1, 0)
-        _ -> (1, 1 - sc, 0)
-      to8 x = min 255 (floor (255 * x))
   in PixelRGB8 (to8 r) (to8 g) (to8 b)
