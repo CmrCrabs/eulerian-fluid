@@ -10,13 +10,13 @@ nx :: Int
 nx = 64
 
 ny :: Int
-ny = 32
+ny = 64
 
 iters :: Int -- number of iterations
 iters = 10
 
 dt :: Double -- timestep
-dt = 0.01
+dt = 1 / 30
 
 g :: Double -- gravity
 g = -9.81
@@ -47,27 +47,22 @@ data SampleType = U | V | S
 
 
 idxS :: Int -> Int -> Int
-idxS x y = x * ny + y
+idxS x y = x + y * nx
 
 idxU :: Int -> Int -> Int
-idxU x y = x * (ny + 1) + y
+idxU x y = x + y * (nx+1)
 
 idxV :: Int -> Int -> Int
-idxV x y = x * ny + y
+idxV x y = x + y * nx
 
 coord :: Int -> (Int, Int)
-coord i = (i `mod` nx, i `div` ny)
+coord i = (i `mod` nx, i `div` nx)
 
-smokeColor :: Double -> Double -> PixelRGB8
-smokeColor 0 _ = PixelRGB8 255 255 255
-smokeColor _ smokeV =
-  let c = floor (255 * smoke)
-   in PixelRGB8 c c c
 
 initSolids :: MutVec -> ST RealWorld ()
 initSolids sV = forM_ [0 .. nx * ny - 1] $ \i -> do
   let (x, y) = coord i
-  let isBorder = x == 0 || y == 0 || x == nx - 1 || y == nx - 1
+  let isBorder = x == 0 || y == 0 || x == nx - 1 || y == ny - 1
   M.write sV i $ if isBorder then 0 else 1
 
 diffuse :: MutVec -> MutVec -> ST RealWorld ()
@@ -123,15 +118,15 @@ extrapolateBorder uV vV = do
     borderTopAdj <- M.read uV $ idxU x 1
     M.write uV (idxU x 0) borderTopAdj
 
-    borderBottomAdj <- M.read uV $ idxU x (nx - 2)
-    M.write uV (idxU x (nx - 1)) borderBottomAdj
+    borderBottomAdj <- M.read uV $ idxU x (ny - 2)
+    M.write uV (idxU x (ny - 1)) borderBottomAdj
 
   forM_ [0 .. ny - 1] $ \y -> do
     borderLeftAdj <- M.read vV $ idxV 1 y
     M.write vV (idxV 0 y) borderLeftAdj
 
-    borderRightAdj <- M.read vV $ idxV (ny - 2) y
-    M.write vV (idxV (ny - 1) y) borderRightAdj
+    borderRightAdj <- M.read vV $ idxV (nx - 2) y
+    M.write vV (idxV (nx - 1) y) borderRightAdj
 
 copyVelocities :: MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
 copyVelocities newUV newVV uV vV = forM_ [1 .. nx * ny - 1] $ \i -> do
@@ -147,8 +142,8 @@ returnVelocities newUV newVV uV vV = forM_ [1 .. nx * ny - 1] $ \i -> do
   M.write uV i newU'
   M.write vV i newV'
 
-advectVel :: MutVec -> MutVec -> MutVec -> ST RealWorld ()
-advectVel uV vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
+advectVel :: MutVec -> MutVec -> MutVec -> MutVec -> MutVec -> ST RealWorld ()
+advectVel newUV newVV uV vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
   let (x, y) = coord i
   unless (x == 0 || y == 0 || x == nx - 1 || y == ny - 1) $ do
     sCell <- M.read sV i
@@ -171,7 +166,7 @@ advectVel uV vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
       let xCoord = fromIntegral x * h - dt * uCell
           yCoord = fromIntegral y * h - dt * avgV
       nV <- sample vV xCoord yCoord V
-      M.write vV i nV
+      M.write newVV i nV
 
     -- check for updating cell here
     unless (sCell == 0 || sy0 == 0) $ do
@@ -179,51 +174,54 @@ advectVel uV vV sV = forM_ [0 .. nx * ny - 1] $ \i -> do
       let xCoord = fromIntegral x * h - dt * avgU
           yCoord = fromIntegral y * h - dt * vCell
       nU <- sample uV xCoord yCoord U
-      M.write uV i nU
+      M.write newUV i nU
 
 sample :: MutVec -> Double -> Double -> SampleType -> ST RealWorld Double
 sample vec xC yC field = do
   -- clamp to be within worldspace
-  let xClamped = max 0.0 (min xC (fromIntegral nx - 1.0))
-      yClamped = max 0.0 (min yC (fromIntegral ny - 1.0))
+  let h1 = 1.0 / h
+
+  let x = max h $ min xC (fromIntegral nx * h)
+      y = max h $ min yC (fromIntegral ny * h)
 
   -- scalars stored cell centres, velocities stored staggered
-  let (offsetX, offsetY) =
+  let (dx, dy) =
         case field of
           U -> (0.0, 0.5 * h)
           V -> (0.5 * h, 0.0)
           S -> (0.5 * h, 0.5 * h)
 
   -- grid coord
-  let x0 = floor (xClamped - offsetX / h) :: Int
-      y0 = floor (yClamped - offsetY / h) :: Int
+  let x0 = min (nx-1) $ floor ((x-dx)*h1)
+      y0 = min (ny-1) $ floor ((y-dy)*h1)
 
-  let w00 = 1 - fromIntegral x0 / h
-      w01 = fromIntegral x0 / h
-      w10 = 1 - fromIntegral y0 / h
-      w11 = fromIntegral y0 / h
+  let tx = ((x-dx) - fromIntegral x0*h) *h1
+      x1 = min (x0 + 1) (nx -1)
+      ty = ((y-dy) -fromIntegral y0*h) * h1
+      y1 = min (y0+1) (ny-1)
+      sx = 1.0 - tx
+      sy = 1.0 -ty
 
   let idxX = case field of
         U -> idxU
         V -> idxV
         S -> idxS
 
-  cell00 <- M.read vec $ idxX x0 y0
-  cell01 <- M.read vec $ idxX x0 (y0 + 1)
-  cell10 <- M.read vec $ idxX (x0 + 1) y0
-  cell11 <- M.read vec $ idxX (x0 + 1) (y0 + 1)
+  val00 <- M.read vec $ idxX x0 y0
+  val10 <- M.read vec $ idxX x1 y0
+  val11 <- M.read vec $ idxX x1 y1
+  val01 <- M.read vec $ idxX x0 y1
 
-  let val =
-        w00 * w01 * cell00
-          + w01 * w10 * cell10
-          + w01 * w11 * cell01
-          + w00 * w11 * cell11
+  let val = sx * sy * val00 +
+            tx * sy * val10 +
+            tx * ty * val11 +
+            sx * ty * val01
   return val
 
 copySmoke :: MutVec -> MutVec -> ST RealWorld ()
 copySmoke smokeV newSmokeV = forM_ [1 .. nx * ny - 1] $ \i -> do
-  s <- M.read smokeV i
-  M.write newSmokeV i s
+  smk <- M.read smokeV i
+  M.write newSmokeV i smk
 
 returnSmoke :: MutVec -> MutVec -> ST RealWorld ()
 returnSmoke smokeV newSmokeV = forM_ [1 .. nx * ny - 1] $ \i -> do
@@ -245,34 +243,26 @@ advectSmoke uV vV sV newSmokeV = forM_ [0 .. nx * ny - 1] $ \i -> do
         vC = vCell + vy1 * 0.5
 
     let xStep = fromIntegral x * h + 0.5 * h - dt * uC
-        yStep = fromIntegral y * h + 0.5 * h - dt * vC
+        yStep = fromIntegral y * h + 0.5 * h + dt * vC
 
     newS <- sample newSmokeV xStep yStep S
     M.write newSmokeV i newS
 
-simulate :: Int -> Sim -> ST RealWorld ()
-simulate 0 _ = return ()
-simulate i sim = do
-  diffuse (v sim) (s sim)
-  resetPressure (pressure sim)
-  project (u sim) (v sim) (s sim) (pressure sim)
-  extrapolateBorder (u sim) (v sim)
+windTunnel :: MutVec -> MutVec -> ST RealWorld ()
+windTunnel uV smokeV = do
+  let windU = 0.5
+      smokeAmount = 0.5
 
-  -- copying and returning to prevent accessing updated values
-  copyVelocities (newU sim) (newV sim) (u sim) (v sim)
-  advectVel (u sim) (v sim) (s sim)
-  returnVelocities (newU sim) (newV sim) (u sim) (v sim)
-
-  copySmoke (smoke sim) (newSmoke sim)
-  advectSmoke (u sim) (v sim) (s sim) (newSmoke sim)
-  returnSmoke (smoke sim) (newSmoke sim)
-
-  simulate (i - 1) sim
+  forM_ [(ny `div` 3)..(ny - (ny `div` 3))] $ \y -> do
+    currentU <- M.read uV (idxS 1 y)
+    M.write uV (idxU 1 y) (currentU + windU)
+    currentSmoke <- M.read smokeV (idxS 1 y)
+    M.write smokeV (idxS 1 y) (currentSmoke + smokeAmount)
 
 main :: IO ()
 main = do
-  simulation <- stToIO $ do
-    uV         <- M.replicate ((nx + 1) * ny) 0 -- initialising a MAC grid
+  (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV) <- stToIO $ do
+    uV         <- M.replicate ((nx + 1) * ny) 0
     vV         <- M.replicate (nx * (ny + 1)) 0
     newUV      <- M.replicate ((nx + 1) * ny) 0
     newVV      <- M.replicate (nx * (ny + 1)) 0
@@ -280,39 +270,67 @@ main = do
     pressureV  <- M.replicate (nx * ny) 0
     smokeV     <- M.replicate (nx * ny) 0
     newSmokeV  <- M.replicate (nx * ny) 0
-    sim <-
-      Sim
-        { u        = uV,
-          v        = vV,
-          newU     = newUV,
-          newV     = newVV,
-          s        = sV,
-          pressure = pressureV,
-          smoke    = smokeV,
-          newSmoke = newSmokeV
-        }
 
-    initSolids (s sim)
+    initSolids sV
+    pure (uV, vV, newUV, newVV, sV, pressureV, smokeV, newSmokeV)
 
-    simulate 1 sim
+  forM_ [0..30] $ \i -> do
+    stToIO $ do
+      windTunnel uV smokeV
+      diffuse vV sV
+      resetPressure pressureV
+      project uV vV sV pressureV
+      extrapolateBorder uV vV
 
-    return sim
+      copyVelocities newUV newVV uV vV
+      advectVel newUV newVV uV vV sV
+      returnVelocities newUV newVV uV vV
 
-  frozen <- stToIO $ V.freeze simulation
+      copySmoke smokeV newSmokeV
+      advectSmoke uV vV sV newSmokeV
+      returnSmoke smokeV newSmokeV
 
-  --let minP = V.minimum $ pressure frozen
-  --    maxP = V.maximum $ pressure frozen
+    frozenS     <- stToIO $ V.freeze sV
+    frozenSmoke <- stToIO $ V.freeze smokeV
+    frozenPressure <- stToIO $ V.freeze pressureV
 
-  let renderpx x y = smokeColor ((s frozen) V.! idxS x y) ((smoke frozen) V.! idxS x y)
-  writePng "output.png" $ generateImage renderpx nx ny
+    let minP = V.minimum $ frozenPressure
+        maxP = V.maximum $ frozenPressure
 
--- REWRITE TODOS
+    let renderpx x y =
+          --smokeColor (frozenS V.! idxS x y) (frozenSmoke V.! idxS x y)
+          sciColor (frozenS V.! idxS x y) (frozenPressure V.! idxS x y) minP maxP
 
--- helpers
--- main
--- init
--- integrate
--- project
--- advectvel
--- sample
--- advectsmoke
+    writePng ("frames/frame_" ++ show i ++ ".png") $
+      generateImage renderpx nx ny
+    putStrLn ("rendered frame " ++ show i)
+
+
+-- ERRORS
+-- when nx != ny checquering
+
+sciColor :: Double -> Double -> Double -> Double -> PixelRGB8
+sciColor 0 _ _ _ = PixelRGB8 255 0 0
+sciColor _ p minP maxP =
+  let eps = 1e-4
+      d = maxP - minP
+      v = if d == 0 then 0.5 else (max minP (min p (maxP - eps)) - minP) / d
+      m = 0.25
+      num = floor (v / m) :: Int
+      s = (v - fromIntegral num * m) / m
+      (r,g,b) = case num of
+        0 -> (0, s, 1)
+        1 -> (0, 1, 1 - s)
+        2 -> (s, 1, 0)
+        _ -> (1, 1 - s, 0)
+      to8 x = floor (255 * x)
+  in PixelRGB8 (to8 r) (to8 g) (to8 b)
+
+
+
+
+smokeColor :: Double -> Double -> PixelRGB8
+smokeColor 0 _ = PixelRGB8 255 0 0
+smokeColor _ smokeV =
+  let c = floor (255 * smokeV)
+   in PixelRGB8 c c c
